@@ -90,11 +90,24 @@ def process_image(img_file, bbox_file, openpose_file, input_res=224):
         elif openpose_file is not None:
             center, scale = bbox_from_openpose(openpose_file)
     img = crop(img, center, scale, (input_res, input_res))
+    img_cropped = img
     img = img.astype(np.float32) / 255.
     img = torch.from_numpy(img).permute(2,0,1)
     norm_img = normalize_img(img.clone())[None]
-    return img, norm_img
+    return img, norm_img, img_cropped
 
+def depth_visualization(depth_raw):
+    max_v = depth_raw.max()
+    min_v = np.min(depth_raw[np.nonzero(depth_raw)])
+    r = max_v - min_v
+    h, w = depth_raw.shape[:2]
+    for i in range(0, h):
+        for j in range(0, w):
+            if depth_raw[i, j] != 0:
+                depth_raw[i, j] = (depth_raw[i, j] - min_v)/r * 255
+    
+    return depth_raw
+                
 if __name__ == '__main__':
     args = parser.parse_args()
     
@@ -113,10 +126,9 @@ if __name__ == '__main__':
 
     # Setup renderer for visualization
     renderer = Renderer(focal_length=constants.FOCAL_LENGTH, img_res=constants.IMG_RES, faces=smpl.faces)
-
-
+    
     # Preprocess input image and generate predictions
-    img, norm_img = process_image(args.img, args.bbox, args.openpose, input_res=constants.IMG_RES)
+    img, norm_img, img_cropped = process_image(args.img, args.bbox, args.openpose, input_res=constants.IMG_RES)
     with torch.no_grad():
         pred_rotmat, pred_betas, pred_camera = model(norm_img.to(device))
         pred_output = smpl(betas=pred_betas, body_pose=pred_rotmat[:,1:], global_orient=pred_rotmat[:,0].unsqueeze(1), pose2rot=False)
@@ -126,22 +138,31 @@ if __name__ == '__main__':
     camera_translation = torch.stack([pred_camera[:,1], pred_camera[:,2], 2*constants.FOCAL_LENGTH/(constants.IMG_RES * pred_camera[:,0] +1e-9)],dim=-1)
     camera_translation = camera_translation[0].cpu().numpy()
     pred_vertices = pred_vertices[0].cpu().numpy()
+    np.savetxt('./pred_vert.txt', pred_vertices, fmt='%.5f')
     img = img.permute(1,2,0).cpu().numpy()
 
     
     # Render parametric shape
-    img_shape = renderer(pred_vertices, camera_translation, img)
-    
+    img_shape, depth, color = renderer(pred_vertices, camera_translation, img)
+
     # Render side views
-    aroundy = cv2.Rodrigues(np.array([0, np.radians(90.), 0]))[0]
+    aroundy = cv2.Rodrigues(np.array([0, np.radians(180.), 0]))[0]
     center = pred_vertices.mean(axis=0)
     rot_vertices = np.dot((pred_vertices - center), aroundy) + center
     
     # Render non-parametric shape
-    img_shape_side = renderer(rot_vertices, camera_translation, np.ones_like(img))
+    img_shape_side, depth_back, colors = renderer(rot_vertices, camera_translation, np.ones_like(img))
 
     outfile = args.img.split('.')[0] if args.outfile is None else args.outfile
 
+    depth = depth_visualization(depth)
+    depth_back = depth_visualization(depth_back)
     # Save reconstructions
-    cv2.imwrite(outfile + '_shape.png', 255 * img_shape[:,:,::-1])
-    cv2.imwrite(outfile + '_shape_side.png', 255 * img_shape_side[:,:,::-1])
+    # cv2.imwrite(outfile + '_shape.png', 255 * img_shape[:,:,::-1])
+    # cv2.imwrite(outfile + '_shape_side.png', 255 * img_shape_side[:,:,::-1])
+    cv2.imwrite(outfile + '_cropped.png', img_cropped[:,:,::-1])
+    cv2.imwrite(outfile + '_smpl.png', 255 * color[:,:,::-1])
+    cv2.imwrite(outfile + '_depth.png', depth)
+    cv2.imwrite(outfile + '_smpl_back.png', 255 * colors[:, :, ::-1])
+    cv2.imwrite(outfile + '_depth_back.png', depth_back)
+    

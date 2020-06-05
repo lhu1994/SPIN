@@ -1,5 +1,5 @@
 import os
-os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
+#os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
 import torch
 from torchvision.utils import make_grid
 import numpy as np
@@ -71,6 +71,7 @@ class Renderer:
         color, rend_depth = self.renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
         color = color.astype(np.float32) / 255.0
         valid_mask = (rend_depth > 0)[:,:,None]
+        color = color[:, :, :3] * valid_mask
         output_img = (color[:, :, :3] * valid_mask +
                   (1 - valid_mask) * image)
-        return output_img
+        return output_img, rend_depth, color
